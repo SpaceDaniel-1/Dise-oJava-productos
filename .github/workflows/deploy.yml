@@ -1,0 +1,94 @@
+name: Deploy TechStore API to ECS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: 266949372933
+  ECR_REPOSITORY: techstore-api
+  ECS_CLUSTER: techstore-cluster-01
+  ECS_SERVICE: techstore-service-v2
+  TASK_FAMILY: techstore-task
+  CONTAINER_NAME: techstore-api
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compilar proyecto con Maven
+        run: mvn clean package -DskipTests
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login en Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Construir imagen Docker
+        run: |
+          docker build -t $ECR_REPOSITORY .
+
+      - name: Etiquetar imagen Docker
+        run: |
+          docker tag $ECR_REPOSITORY:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+
+      - name: Subir imagen a ECR
+        run: |
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+
+      - name: Descargar task definition actual
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $TASK_FAMILY \
+            --query taskDefinition \
+            > task-definition.json
+
+      - name: Limpiar task definition
+        run: |
+          jq 'del(
+            .taskDefinitionArn,
+            .revision,
+            .status,
+            .requiresAttributes,
+            .compatibilities,
+            .registeredAt,
+            .registeredBy
+          )' task-definition.json > clean-task-definition.json
+
+      - name: Registrar nueva revision de task definition
+        run: |
+          aws ecs register-task-definition \
+            --cli-input-json file://clean-task-definition.json \
+            > new-task-definition.json
+
+      - name: Obtener nueva revision
+        run: |
+          echo "TASK_REVISION=$(jq -r '.taskDefinition.taskDefinitionArn' new-task-definition.json)" >> $GITHUB_ENV
+
+      - name: Actualizar servicio ECS
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $TASK_REVISION \
+            --force-new-deployment
