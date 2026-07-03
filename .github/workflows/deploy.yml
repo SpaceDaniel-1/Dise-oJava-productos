@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
@@ -11,19 +12,17 @@ env:
   ECR_REPOSITORY: techstore-api
   ECS_CLUSTER: techstore-cluster-01
   ECS_SERVICE: techstore-service-v2
-  TASK_FAMILY: techstore-task
-  CONTAINER_NAME: techstore-api
 
 jobs:
   deploy:
     name: Build and Deploy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Descargar codigo
         uses: actions/checkout@v4
 
-      - name: Configurar Java
+      - name: Configurar Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -40,55 +39,25 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verificar identidad AWS
+        run: aws sts get-caller-identity
+
       - name: Login en Amazon ECR
         run: |
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          aws ecr get-login-password --region $env:AWS_REGION | docker login --username AWS --password-stdin "$env:AWS_ACCOUNT_ID.dkr.ecr.$env:AWS_REGION.amazonaws.com"
 
       - name: Construir imagen Docker
         run: |
-          docker build -t $ECR_REPOSITORY .
+          docker build -t $env:ECR_REPOSITORY .
 
       - name: Etiquetar imagen Docker
         run: |
-          docker tag $ECR_REPOSITORY:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+          docker tag "$env:ECR_REPOSITORY:latest" "$env:AWS_ACCOUNT_ID.dkr.ecr.$env:AWS_REGION.amazonaws.com/$env:ECR_REPOSITORY:latest"
 
-      - name: Subir imagen a ECR
+      - name: Subir imagen a Amazon ECR
         run: |
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+          docker push "$env:AWS_ACCOUNT_ID.dkr.ecr.$env:AWS_REGION.amazonaws.com/$env:ECR_REPOSITORY:latest"
 
-      - name: Descargar task definition actual
+      - name: Actualizar servicio ECS Fargate
         run: |
-          aws ecs describe-task-definition \
-            --task-definition $TASK_FAMILY \
-            --query taskDefinition \
-            > task-definition.json
-
-      - name: Limpiar task definition
-        run: |
-          jq 'del(
-            .taskDefinitionArn,
-            .revision,
-            .status,
-            .requiresAttributes,
-            .compatibilities,
-            .registeredAt,
-            .registeredBy
-          )' task-definition.json > clean-task-definition.json
-
-      - name: Registrar nueva revision de task definition
-        run: |
-          aws ecs register-task-definition \
-            --cli-input-json file://clean-task-definition.json \
-            > new-task-definition.json
-
-      - name: Obtener nueva revision
-        run: |
-          echo "TASK_REVISION=$(jq -r '.taskDefinition.taskDefinitionArn' new-task-definition.json)" >> $GITHUB_ENV
-
-      - name: Actualizar servicio ECS
-        run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --task-definition $TASK_REVISION \
-            --force-new-deployment
+          aws ecs update-service --cluster $env:ECS_CLUSTER --service $env:ECS_SERVICE --force-new-deployment
