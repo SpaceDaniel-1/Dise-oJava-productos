@@ -78,6 +78,12 @@
             <version>0.11.5</version>
             <scope>runtime</scope>
         </dependency>
+        <!-- AWS SQS -->
+        <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>sqs</artifactId>
+        <version>2.20.162</version> <!-- O la versión estable que prefieras -->
+        </dependency>
 
         <!-- TEST -->
         <dependency>
