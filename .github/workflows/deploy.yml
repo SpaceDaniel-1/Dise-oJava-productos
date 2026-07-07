@@ -42,22 +42,32 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
+          unset-current-credentials: true
 
       - name: Verificar identidad AWS
-        run: aws sts get-caller-identity
+        run: |
+          aws sts get-caller-identity
+          $account = aws sts get-caller-identity --query Account --output text
+          if ($account -ne $env:AWS_ACCOUNT_ID) {
+            throw "La cuenta AWS activa es $account, pero se esperaba $env:AWS_ACCOUNT_ID"
+          }
+
+      - name: Verificar repositorio ECR
+        run: aws ecr describe-repositories --repository-names $env:ECR_REPOSITORY --region $env:AWS_REGION
 
       - name: Login en Amazon ECR
-        run: |
-          aws ecr get-login-password --region $env:AWS_REGION | docker login --username AWS --password-stdin "$env:AWS_ACCOUNT_ID.dkr.ecr.$env:AWS_REGION.amazonaws.com"
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Construir imagen Docker
-        run: docker build -t "$env:ECR_REPOSITORY:latest" .
-
-      - name: Etiquetar imagen Docker
-        run: docker tag "$env:ECR_REPOSITORY:latest" "$env:AWS_ACCOUNT_ID.dkr.ecr.$env:AWS_REGION.amazonaws.com/$env:ECR_REPOSITORY:latest"
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: docker build -t "$env:ECR_REGISTRY/$env:ECR_REPOSITORY:latest" .
 
       - name: Subir imagen a Amazon ECR
-        run: docker push "$env:AWS_ACCOUNT_ID.dkr.ecr.$env:AWS_REGION.amazonaws.com/$env:ECR_REPOSITORY:latest"
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: docker push "$env:ECR_REGISTRY/$env:ECR_REPOSITORY:latest"
 
       - name: Actualizar servicio ECS Fargate
         run: |
